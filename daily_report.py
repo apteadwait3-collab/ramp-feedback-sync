@@ -25,7 +25,6 @@ logic that keeps them from re-scanning all of history every night.
 """
 
 import argparse
-import fcntl
 import html
 import json
 import os
@@ -34,12 +33,18 @@ import sys
 import time
 from datetime import datetime, timedelta
 
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
+
 from dotenv import load_dotenv
 
 import auth
 import emailer
 import post_event_checks
 from main import load_checkpoint, save_checkpoint, scrape_event
+from notifier import notify as _notify
 from post_event_checks import parse_event_date
 from sheets_sync import SheetsSync
 from source_client import PersistentFailure, RampClient
@@ -52,19 +57,7 @@ RUN_LOCK_FILE = os.path.join(OUTPUT_DIR, "daily_report.lock")
 
 
 def notify(message: str):
-    """Best-effort desktop notification (macOS) so an unattended scheduled
-    run doesn't silently sit at the login screen unnoticed. Never allowed
-    to break the run it's reporting on."""
-    try:
-        subprocess.run(
-            [
-                "osascript", "-e",
-                f'display notification "{message}" with title "RAMP Daily Report" sound name "Glass"',
-            ],
-            check=False, timeout=5,
-        )
-    except Exception:
-        pass
+    _notify(message, title="RAMP Daily Report")
 
 
 def already_sent_today(today) -> bool:
@@ -522,11 +515,21 @@ def main():
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     with open(RUN_LOCK_FILE, "w") as lock_file:
-        try:
-            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            print("Another daily RAMP run is already active; skipping this duplicate run.")
-            return
+        if os.name == "nt":
+            lock_file.write("1")
+            lock_file.flush()
+            lock_file.seek(0)
+            try:
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError:
+                print("Another daily RAMP run is already active; skipping this duplicate run.")
+                return
+        else:
+            try:
+                fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                print("Another daily RAMP run is already active; skipping this duplicate run.")
+                return
 
         try:
             _run(dry_run=args.dry_run, limit_events=args.limit_events)

@@ -4,3 +4,4 @@ gspread>=6.1
 google-auth>=2.29
 python-dotenv>=1.0
 python-dateutil>=2.9
+tzdata; sys_platform == "win32"

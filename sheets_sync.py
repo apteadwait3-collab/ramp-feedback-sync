@@ -56,6 +56,12 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 OVERVIEW_SHEET = "Overview"
 WEEKLY_REPORTS_SHEET = "Weekly Reports"  # historical archive from the old Monday schedule — left untouched, no longer written to
 DAILY_REPORTS_SHEET = "Daily Reports"
+ADMIN_CHECK_LOG_SHEET = "Post-Event Admin Log"
+
+ADMIN_CHECK_LOG_HEADER = [
+    "Run Timestamp", "Event ID", "Event Name", "Event Date", "Registered",
+    "Attended", "Attendance Sheet", "Event Photos", "Status", "Details",
+]
 
 # Resolved against each live worksheet header at runtime. ``Feedback`` is the
 # field present in the current workbook; the earlier names make a future
@@ -437,6 +443,7 @@ class SheetsSync:
                 "RunLog",
                 WEEKLY_REPORTS_SHEET,
                 DAILY_REPORTS_SHEET,
+                ADMIN_CHECK_LOG_SHEET,
             )
         ]
         rows = [["Month", "Feedback Rows", "Last Updated"]]
@@ -484,6 +491,47 @@ class SheetsSync:
             new_rows,
             error_summary,
         ], value_input_option="USER_ENTERED")
+
+    def write_admin_check_log(self, entries: list[dict]):
+        """Append one row per event checked by admin_completion_check.py's
+        noon run — a full audit trail ("every log about whatever is
+        happening") separate from the feedback-sync RunLog, since this
+        checks entirely different portal data (registration/attendance
+        counts + document uploads, not feedback forms).
+
+        Each entry: {event_id, event_name, event_date, registered, attended,
+        has_attendance_sheet, has_event_photos, status, details}.
+        """
+        if not entries:
+            return
+        try:
+            ws = self.spreadsheet.worksheet(ADMIN_CHECK_LOG_SHEET)
+        except gspread.WorksheetNotFound:
+            ws = self.spreadsheet.add_worksheet(
+                ADMIN_CHECK_LOG_SHEET, rows=1000, cols=len(ADMIN_CHECK_LOG_HEADER)
+            )
+            _with_retry(ws.append_row, ADMIN_CHECK_LOG_HEADER)
+            last_col = gspread.utils.rowcol_to_a1(1, len(ADMIN_CHECK_LOG_HEADER)).rstrip("1")
+            _with_retry(ws.format, f"A1:{last_col}1", {
+                "textFormat": {"bold": True, "foregroundColor": {"red": 1, "green": 1, "blue": 1}},
+                "backgroundColor": HEADER_COLOR,
+            })
+            _with_retry(ws.freeze, rows=1)
+
+        timestamp = datetime.now(timezone.utc).isoformat()
+        rows = [[
+            timestamp,
+            e.get("event_id", ""),
+            e.get("event_name", ""),
+            e.get("event_date", ""),
+            e.get("registered", ""),
+            e.get("attended", ""),
+            "Yes" if e.get("has_attendance_sheet") else "No",
+            "Yes" if e.get("has_event_photos") else "No",
+            e.get("status", ""),
+            _capped(e.get("details", ""), CELL_CHAR_LIMIT),
+        ] for e in entries]
+        _with_retry(ws.append_rows, rows, value_input_option="USER_ENTERED")
 
     def write_daily_report(self, run_date_label: str, month_label: str, summary_events: list[dict],
                             pending_items: list[dict], errors: list[str], html_body: str, plain_body: str):
