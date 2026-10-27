@@ -32,6 +32,7 @@ that's a explicit product decision, not an oversight.
 """
 
 import argparse
+import html
 import os
 import sys
 import time
@@ -122,50 +123,123 @@ def fmt_count(value):
     return "?" if value is None else str(value)
 
 
+def _event_date_only(event_date: str) -> str:
+    parsed = parse_event_date(event_date)
+    return parsed.strftime("%d %b %Y") if parsed else str(event_date)
+
+
+def _yes_no_html(value):
+    if value is None:
+        return '<span style="color:#b45309;">Check failed</span>'
+    if value:
+        return '<span style="color:#15803d;">&#10003; Uploaded</span>'
+    return '<span style="color:#b91c1c;">&#10007; Missing</span>'
+
+
+def _yes_no_plain(value):
+    return "Check failed" if value is None else ("Uploaded" if value else "MISSING")
+
+
+def _count_html(value):
+    if value is None:
+        return '<span style="color:#b45309;">?</span>'
+    if value == 0:
+        return '<span style="color:#b91c1c;font-weight:bold;">0</span>'
+    return f"<b>{value}</b>"
+
+
 def render_no_events_email(yesterday_label: str):
     html_body = (
-        f"<h2>RAMP Post-Event Admin Check — {yesterday_label}</h2>"
-        f"<p>No events happened on {yesterday_label}. Nothing to check today.</p>"
+        '<div style="font-family:Arial,Helvetica,sans-serif;max-width:720px;color:#1f2937;">'
+        '<h2 style="margin:0 0 4px;color:#1e3a8a;">RAMP Post-Event Digest</h2>'
+        f'<div style="color:#6b7280;margin-bottom:16px;">Events held on {yesterday_label}</div>'
+        '<div style="background:#f3f4f6;border-radius:6px;padding:14px 16px;">'
+        f'No events were held on <b>{yesterday_label}</b>. Nothing to check today.</div>'
+        '<p style="color:#9ca3af;font-size:12px;margin-top:20px;">Automated daily check &middot; MCCIA RAMP</p>'
+        '</div>'
     )
     plain_body = (
-        f"RAMP Post-Event Admin Check — {yesterday_label}\n\n"
-        f"No events happened on {yesterday_label}. Nothing to check today."
+        f"RAMP POST-EVENT DIGEST - events held on {yesterday_label}\n\n"
+        f"No events were held on {yesterday_label}. Nothing to check today."
     )
     return html_body, plain_body
 
 
 def render_email(missing_events: list[dict], complete_events: list[dict], yesterday_label: str):
-    parts_html = [f"<h2>RAMP Post-Event Admin Check — {yesterday_label}</h2>"]
-    parts_plain = [f"RAMP Post-Event Admin Check — {yesterday_label}", ""]
+    total = len(missing_events) + len(complete_events)
+    all_events = sorted(missing_events + complete_events, key=lambda e: e["event_id"])
+    n_bad, n_ok = len(missing_events), len(complete_events)
+    banner_color, banner_bg = ("#b91c1c", "#fef2f2") if n_bad else ("#15803d", "#f0fdf4")
+    banner_text = (
+        f"{n_bad} of {total} event(s) need attention" if n_bad else f"All {total} event(s) fully complete"
+    )
 
+    th = 'style="text-align:left;padding:8px 10px;background:#1e3a8a;color:#fff;font-size:12px;white-space:nowrap;"'
+    rows_html = []
+    for e in all_events:
+        ok = not e["missing"]
+        status = (
+            '<span style="color:#15803d;font-weight:bold;">&#10003; Complete</span>' if ok
+            else '<span style="color:#b91c1c;font-weight:bold;">&#9888; Needs attention</span>'
+        )
+        td = 'style="padding:8px 10px;border-bottom:1px solid #e5e7eb;font-size:13px;vertical-align:top;"'
+        rows_html.append(
+            f"<tr><td {td}><b>{html.escape(e['event_name'])}</b><br>"
+            f'<span style="color:#6b7280;font-size:11px;">{html.escape(e["event_id"])} &middot; {_event_date_only(e["event_date"])}</span></td>'
+            f"<td {td} align='center'>{_count_html(e['registered'])}</td>"
+            f"<td {td} align='center'>{_count_html(e['attended'])}</td>"
+            f"<td {td}>{_yes_no_html(e['has_attendance_sheet'])}</td>"
+            f"<td {td}>{_yes_no_html(e['has_event_photos'])}</td>"
+            f"<td {td}>{status}</td></tr>"
+        )
+
+    action_html = ""
+    plain_actions = []
     if missing_events:
-        parts_html.append("<h3>⚠ Needs attention</h3><ul>")
-        parts_plain.append("NEEDS ATTENTION:")
-        for e in missing_events:
-            reasons = "; ".join(e["missing"])
-            parts_html.append(
-                f"<li><b>{e['event_name']}</b> ({e['event_id']}, {e['event_date']}): {reasons}</li>"
-            )
-            parts_plain.append(f"- {e['event_name']} ({e['event_id']}, {e['event_date']}): {reasons}")
-        parts_html.append("</ul>")
-        parts_plain.append("")
+        items = "".join(
+            f"<li style='margin-bottom:6px;'><b>{html.escape(e['event_name'])}</b> "
+            f"({html.escape(e['event_id'])}): {html.escape('; '.join(e['missing']))}</li>"
+            for e in missing_events
+        )
+        action_html = (
+            '<h3 style="margin:22px 0 8px;color:#b91c1c;font-size:15px;">Action required</h3>'
+            '<div style="background:#fef2f2;border-left:4px solid #b91c1c;padding:10px 16px;font-size:13px;">'
+            "Please update the RAMP portal for the following:"
+            f'<ul style="margin:8px 0 0;padding-left:18px;">{items}</ul></div>'
+        )
+        plain_actions = ["", "ACTION REQUIRED - please update the RAMP portal:"] + [
+            f"  * {e['event_name']} ({e['event_id']}): {'; '.join(e['missing'])}" for e in missing_events
+        ]
 
-    if complete_events:
-        parts_html.append("<h3>✅ Complete</h3><ul>")
-        parts_plain.append("COMPLETE:")
-        for e in complete_events:
-            line = (
-                f"Registered: {fmt_count(e['registered'])}, Attended: {fmt_count(e['attended'])}, "
-                f"Attendance sheet: uploaded, Event photos: uploaded"
-            )
-            parts_html.append(
-                f"<li><b>{e['event_name']}</b> ({e['event_id']}, {e['event_date']}) — {line}</li>"
-            )
-            parts_plain.append(f"- {e['event_name']} ({e['event_id']}, {e['event_date']}) — {line}")
-        parts_html.append("</ul>")
-        parts_plain.append("")
+    html_body = (
+        '<div style="font-family:Arial,Helvetica,sans-serif;max-width:760px;color:#1f2937;">'
+        '<h2 style="margin:0 0 4px;color:#1e3a8a;">RAMP Post-Event Digest</h2>'
+        f'<div style="color:#6b7280;margin-bottom:16px;">Events held on {yesterday_label}</div>'
+        f'<div style="background:{banner_bg};border-left:4px solid {banner_color};padding:12px 16px;margin-bottom:18px;">'
+        f'<span style="color:{banner_color};font-weight:bold;font-size:15px;">{banner_text}</span><br>'
+        f'<span style="font-size:13px;">{n_ok} complete &middot; {n_bad} incomplete &middot; {total} total</span></div>'
+        '<table role="presentation" cellspacing="0" cellpadding="0" style="border-collapse:collapse;width:100%;border:1px solid #e5e7eb;">'
+        f"<tr><th {th}>Event</th><th {th}>Registered</th><th {th}>Attended</th>"
+        f"<th {th}>Attendance sheet</th><th {th}>Event photos</th><th {th}>Status</th></tr>"
+        + "".join(rows_html) + "</table>"
+        + action_html
+        + '<p style="color:#9ca3af;font-size:12px;margin-top:22px;">Automated daily check &middot; MCCIA RAMP. '
+        "Counts and uploads are read live from the RAMP portal.</p></div>"
+    )
 
-    return "\n".join(parts_html), "\n".join(parts_plain)
+    plain = [f"RAMP POST-EVENT DIGEST - events held on {yesterday_label}", "",
+             f"{banner_text}  ({n_ok} complete, {n_bad} incomplete, {total} total)", ""]
+    for e in all_events:
+        plain += [
+            f"* {e['event_name']} [{e['event_id']}, {_event_date_only(e['event_date'])}]",
+            f"    Registered: {fmt_count(e['registered'])}   Attended: {fmt_count(e['attended'])}",
+            f"    Attendance sheet: {_yes_no_plain(e['has_attendance_sheet'])}   "
+            f"Event photos: {_yes_no_plain(e['has_event_photos'])}",
+            f"    Status: {'Complete' if not e['missing'] else 'NEEDS ATTENTION'}",
+            "",
+        ]
+    plain += plain_actions
+    return html_body, "\n".join(plain)
 
 
 def _run(dry_run: bool = False, limit_events: int = None):
@@ -286,7 +360,37 @@ def main():
             _run(dry_run=args.dry_run, limit_events=args.limit_events)
         except Exception as e:
             notify(f"RAMP noon admin check FAILED: {e}"[:200], title="RAMP Post-Event Check")
+            if not args.dry_run:
+                send_failure_alert(e)
             raise
+
+
+def send_failure_alert(error: Exception):
+    """A run that dies (login never detected, portal down, ...) otherwise
+    produces no email at all, which looks identical to a quiet day."""
+    try:
+        load_dotenv()
+        today_label = datetime.now(IST).strftime("%b %d, %Y")
+        reason = f"{type(error).__name__}: {error}"
+        html_body = (
+            f"<h2>RAMP noon check did NOT run — {today_label}</h2>"
+            f"<p>No post-event report was produced today.</p><p><b>Reason:</b> {reason}</p>"
+            "<p>If it says no login was detected, log in inside the Chromium window the "
+            "script opens (not your normal browser) before the 30-minute timeout.</p>"
+        )
+        plain_body = (
+            f"RAMP noon check did NOT run — {today_label}\n\n"
+            f"No post-event report was produced today.\nReason: {reason}\n"
+            "If it says no login was detected, log in inside the Chromium window the "
+            "script opens (not your normal browser) before the 30-minute timeout."
+        )
+        env = "ADMIN_CHECK_ALERT_RECIPIENTS" if os.getenv("ADMIN_CHECK_ALERT_RECIPIENTS") else "ADMIN_CHECK_RECIPIENTS"
+        emailer.send_report_email(
+            f"RAMP noon check FAILED — no report today ({today_label})",
+            html_body, plain_body, recipients_env=env,
+        )
+    except Exception as alert_error:
+        print(f"Could not send failure alert: {alert_error}")
 
 
 if __name__ == "__main__":
