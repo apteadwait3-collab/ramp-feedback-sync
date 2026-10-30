@@ -324,7 +324,16 @@ def _run(dry_run: bool = False, limit_events: int = None):
     else:
         subject = f"RAMP Post-Event Check — all caught up ({yesterday_label})"
 
-    recipients_env = "ADMIN_CHECK_RECIPIENTS" if os.getenv("ADMIN_CHECK_RECIPIENTS") else "REPORT_RECIPIENTS"
+    if candidates:
+        recipients_env = "ADMIN_CHECK_RECIPIENTS" if os.getenv("ADMIN_CHECK_RECIPIENTS") else "REPORT_RECIPIENTS"
+    else:
+        # Quiet day: only the operators hear about it, so the wider team
+        # isn't emailed a daily "nothing happened".
+        recipients_env = (
+            "ADMIN_CHECK_NO_EVENT_RECIPIENTS" if os.getenv("ADMIN_CHECK_NO_EVENT_RECIPIENTS")
+            else "ADMIN_CHECK_ALERT_RECIPIENTS"
+        )
+    print(f"Sending to {recipients_env}: {os.getenv(recipients_env)}")
     emailer.send_report_email(subject, html_body, plain_body, recipients_env=recipients_env)
     print("Post-event admin check emailed.")
     notify(subject, title="RAMP Post-Event Check")
